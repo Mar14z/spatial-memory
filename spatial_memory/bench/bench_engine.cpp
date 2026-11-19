@@ -167,5 +167,61 @@ int main() {
         for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
     }
 
+    // ---------- 6) v2: segment compression + time queries ----------
+    {
+        std::string base = "/tmp/sm_bench_seg";
+        for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+
+        const int OBJ = 10, FRAMES = 1000;  // 10k observations
+        std::normal_distribution<float> jit(0.0f, 0.01f);
+        auto t0 = Clock::now();
+        {
+            Config c;
+            c.db_path = base;
+            SpatialMemoryEngine e(c);
+            for (int f = 0; f < FRAMES; f++) {
+                for (int i = 0; i < OBJ; i++) {
+                    Observation o;
+                    o.label = (uint16_t)(i + 1);
+                    o.pos[0] = (float)i * 2.0f + jit(rng);
+                    o.pos[1] = jit(rng);
+                    o.pos[2] = jit(rng);
+                    o.ts_ns = (int64_t)f * 100'000'000LL;
+                    o.confidence = 0.9f;
+                    e.add_observation(o);
+                }
+            }
+        }
+        auto t1 = Clock::now();
+        double wsec = std::chrono::duration<double>(t1 - t0).count();
+
+        Config c2;
+        c2.db_path = base;
+        SpatialMemoryEngine e2(c2);
+        uint64_t obs = e2.persisted_observations();
+        uint64_t segs = e2.persisted_segments();
+        printf("[compress] %d obs -> %llu segments (ratio %.0f:1)  write=%.1fs\n",
+               OBJ * FRAMES, (unsigned long long)segs,
+               segs ? (double)obs / (double)segs : 0.0, wsec);
+
+        std::vector<double> lat;
+        lat.reserve(2000);
+        for (int q = 0; q < 2000; q++) {
+            int64_t from = (int64_t)(q % FRAMES) * 100'000'000LL;
+            auto s0 = Clock::now();
+            auto r = e2.query_time_range(from, from + 2'000'000'000LL, std::nullopt, 1000);
+            auto s1 = Clock::now();
+            lat.push_back(std::chrono::duration<double, std::micro>(s1 - s0).count());
+            (void)r;
+        }
+        auto h0 = Clock::now();
+        auto hist = e2.query_history(1, 0, (int64_t)FRAMES * 100'000'000LL, 5000);
+        auto h1 = Clock::now();
+        printf("[timeq]   range P50=%.0f us  P99=%.0f us  | history segs=%zu in %.0f us\n",
+               percentile(lat, 0.50), percentile(lat, 0.99), hist.size(),
+               std::chrono::duration<double, std::micro>(h1 - h0).count());
+        for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+    }
+
     return 0;
 }

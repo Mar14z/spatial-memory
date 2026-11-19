@@ -41,6 +41,10 @@ struct Config {
     int64_t assoc_window_ns = 5'000'000'000LL;
     uint32_t max_entities = 1'000'000;
     std::string db_path;  // empty = in-memory only
+
+    // v2: observation compression (resident segments)
+    int64_t segment_max_gap_ns = 5'000'000'000LL;  // 5s: merge observations closer than this
+    float segment_max_dist_m = 0.05f;              // 5cm: and spatially closer than this
 };
 
 }  // namespace sm

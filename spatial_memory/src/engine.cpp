@@ -100,7 +100,10 @@ void SpatialMemoryEngine::flush_batch(std::deque<WriteItem>& batch) {
     last.reserve(batch.size());
     for (auto& it : batch) last[it.ent.id] = &it.ent;
     for (auto& kv : last) store_->upsert_entity(*kv.second);
-    for (auto& it : batch) store_->append_observation(it.ent.id, it.obs);
+    for (auto& it : batch) {
+        store_->append_segment(it.ent.id, it.obs,
+                               cfg_.segment_max_gap_ns, cfg_.segment_max_dist_m);
+    }
     store_->commit();
     persisted_ += batch.size();
 }
@@ -216,6 +219,28 @@ SpatialMemoryEngine::Stats SpatialMemoryEngine::stats() const {
 
 uint64_t SpatialMemoryEngine::persisted_observations() {
     return store_ ? store_->count_observations() : 0;
+}
+
+uint64_t SpatialMemoryEngine::persisted_segments() {
+    return store_ ? store_->count_segments() : 0;
+}
+
+std::vector<HistoryPoint> SpatialMemoryEngine::query_history(
+    uint64_t entity_id, int64_t from_ts, int64_t to_ts, size_t limit) const {
+    std::vector<HistoryPoint> out;
+    if (!store_) return out;
+    store_->query_history(entity_id, from_ts, to_ts, limit,
+                          [&](const HistoryPoint& hp) { out.push_back(hp); });
+    return out;
+}
+
+std::vector<HistoryPoint> SpatialMemoryEngine::query_time_range(
+    int64_t from_ts, int64_t to_ts, std::optional<uint16_t> label, size_t limit) const {
+    std::vector<HistoryPoint> out;
+    if (!store_) return out;
+    store_->query_time_range(from_ts, to_ts, label ? (int)*label : -1, limit,
+                             [&](const HistoryPoint& hp) { out.push_back(hp); });
+    return out;
 }
 
 }  // namespace sm
