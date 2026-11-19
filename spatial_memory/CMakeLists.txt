@@ -7,8 +7,12 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-add_library(sm STATIC src/engine.cpp)
+find_package(SQLite3 REQUIRED)
+find_package(Threads REQUIRED)
+
+add_library(sm STATIC src/engine.cpp src/sqlite_store.cpp)
 target_include_directories(sm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(sm PUBLIC SQLite::SQLite3 Threads::Threads)
 target_compile_options(sm PRIVATE -O2 -Wall -Wextra)
 
 enable_testing()
