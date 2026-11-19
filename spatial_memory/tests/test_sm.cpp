@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <string>
 
+#include "sm/clip_tokenizer.hpp"
 #include "sm/engine.hpp"
 
 using namespace sm;
@@ -303,6 +304,29 @@ TEST(FeatureTest, RejectsUnknownEntity) {
     std::vector<float> f(512, 0.f);
     f[0] = 1.f;
     EXPECT_FALSE(e.set_feature(999, f.data(), 512));
+}
+
+TEST(TokenizerTest, MatchesReferenceIds) {
+    ClipTokenizer tk;
+    if (!tk.load("/root/clip_data/vocab.tsv", "/root/clip_data/merges.txt")) {
+        GTEST_SKIP() << "clip_data not present on this machine";
+    }
+    struct Case {
+        const char* text;
+        std::vector<int64_t> expect;
+    };
+    const Case cases[] = {
+        {"a photo of a cup", {49406, 320, 1125, 539, 320, 1937, 49407}},
+        {"a red mug", {49406, 320, 736, 9722, 49407}},
+        {"a car", {49406, 320, 1615, 49407}},
+    };
+    for (const auto& c : cases) {
+        auto ids = tk.encode(c.text);
+        ASSERT_GE(ids.size(), c.expect.size());
+        for (size_t i = 0; i < c.expect.size(); i++) {
+            EXPECT_EQ(ids[i], c.expect[i]) << "text: " << c.text << " pos " << i;
+        }
+    }
 }
 
 int main(int argc, char** argv) {
