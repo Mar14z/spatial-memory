@@ -34,6 +34,17 @@ public:
         int32_t x0 = cell_idx(c[0] - r), x1 = cell_idx(c[0] + r);
         int32_t y0 = cell_idx(c[1] - r), y1 = cell_idx(c[1] + r);
         int32_t z0 = cell_idx(c[2] - r), z1 = cell_idx(c[2] + r);
+        // Large-radius guard: scanning r^3 empty cells is worse than
+        // iterating only the occupied ones.
+        int64_t nx = (int64_t)x1 - x0 + 1;
+        int64_t ny = (int64_t)y1 - y0 + 1;
+        int64_t nz = (int64_t)z1 - z0 + 1;
+        if (nx * ny * nz > 262144) {
+            for (const auto& kv : cells_) {
+                for (uint32_t s : kv.second) f(s);
+            }
+            return;
+        }
         for (int32_t x = x0; x <= x1; ++x)
             for (int32_t y = y0; y <= y1; ++y)
                 for (int32_t z = z0; z <= z1; ++z) {
