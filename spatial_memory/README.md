@@ -7,6 +7,8 @@
 - **v0 完成**：纯内存引擎（对象池 + 网格哈希 + 数据关联），10 单测全绿
 - v1 计划：SQLite WAL 持久化 + 观测表 + 崩溃恢复
 
+详细设计（架构、数据流、设计决策、性能基线）见 [docs/DESIGN.md](docs/DESIGN.md)。
+
 ## 目标平台
 
 - Orange Pi AIpro（昇腾 310B 4×A55 @1.6GHz / 8GB / Ubuntu 22.04）
