@@ -223,5 +223,53 @@ int main() {
         for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
     }
 
+    // ---------- 7) v3: feature search (in-memory engine, CLIP-like 512-d vectors) ----------
+    {
+        Config c;  // memory mode
+        SpatialMemoryEngine e(c);
+        const int N = 10000, D = 512;
+        std::vector<uint64_t> ids;
+        ids.reserve(N);
+        for (int i = 0; i < N; i++) {
+            Observation o;
+            o.label = 1;
+            o.pos[0] = (float)(i % 100);
+            o.pos[1] = (float)(i / 100);
+            o.pos[2] = 0.f;
+            o.ts_ns = (int64_t)i;
+            o.confidence = 0.9f;
+            ids.push_back(e.add_observation(o));
+        }
+        std::normal_distribution<float> nd(0.f, 1.f);
+        std::vector<float> fv(D);
+        auto t_feat0 = Clock::now();
+        for (int i = 0; i < N; i++) {
+            double s = 0.0;
+            for (auto& x : fv) { x = nd(rng); s += (double)x * x; }
+            float inv = (float)(1.0 / std::sqrt(s));
+            for (auto& x : fv) x *= inv;
+            e.set_feature(ids[i], fv.data(), D);
+        }
+        auto t_feat1 = Clock::now();
+        double set_us = std::chrono::duration<double, std::micro>(t_feat1 - t_feat0).count() / N;
+
+        std::vector<double> lat;
+        const int Q = 200;
+        for (int q = 0; q < Q; q++) {
+            double s = 0.0;
+            for (auto& x : fv) { x = nd(rng); s += (double)x * x; }
+            float inv = (float)(1.0 / std::sqrt(s));
+            for (auto& x : fv) x *= inv;
+            auto s0 = Clock::now();
+            auto hits = e.query_by_feature(fv.data(), D, 5);
+            auto s1 = Clock::now();
+            lat.push_back(std::chrono::duration<double, std::micro>(s1 - s0).count());
+            (void)hits;
+        }
+        printf("[featq]   N=%d D=%d top5  P50=%.2f ms  P99=%.2f ms  set=%.1f us/vec  cache=%zu\n",
+               N, D, percentile(lat, 0.50) / 1000.0, percentile(lat, 0.99) / 1000.0,
+               set_us, e.feature_count());
+    }
+
     return 0;
 }
