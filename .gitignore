@@ -1,0 +1,8 @@
+build/
+kernel_meta/
+*.om
+*.onnx
+*.pt
+*.log
+.cache/
+__pycache__/
