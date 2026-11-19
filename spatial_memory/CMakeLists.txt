@@ -27,3 +27,6 @@ endif()
 
 add_executable(bench_sm bench/bench_engine.cpp)
 target_link_libraries(bench_sm PRIVATE sm pthread)
+
+add_executable(crash_test tools/crash_test.cpp)
+target_link_libraries(crash_test PRIVATE sm pthread)
