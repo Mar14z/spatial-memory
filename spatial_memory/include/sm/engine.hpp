@@ -38,6 +38,19 @@ public:
                                                std::optional<uint16_t> label = std::nullopt,
                                                size_t limit = 10000) const;
 
+    // v3: semantic features (e.g. CLIP 512-d). Stored L2-normalized; cosine == dot.
+    struct FeatureHit {
+        uint64_t id = 0;
+        float score = 0.f;
+        uint16_t label = 0;
+        float pos[3] = {0.f, 0.f, 0.f};
+        int64_t last_seen_ns = 0;
+    };
+    bool set_feature(uint64_t id, const float* feat, size_t dim);
+    std::vector<FeatureHit> query_by_feature(const float* feat, size_t dim,
+                                             size_t top_k = 5) const;
+    size_t feature_count() const { return feat_ids_.size(); }
+
     struct Stats {
         uint64_t adds = 0;
         uint64_t updates = 0;
@@ -55,12 +68,17 @@ public:
 
 private:
     struct WriteItem {
-        Entity ent;
-        Observation obs;
+        enum Kind : uint8_t { kObservation = 0, kFeature = 1 };
+        Kind kind = kObservation;
+        Entity ent;               // kObservation
+        Observation obs;          // kObservation
+        uint64_t id = 0;          // kFeature
+        std::vector<float> feat;  // kFeature (L2-normalized)
     };
 
     void recover();
     void enqueue(const Entity& e, const Observation& o);
+    void enqueue_item(WriteItem&& wi);
     void flush_loop();
     void flush_batch(std::deque<WriteItem>& batch);
     static QueryResult to_result(const Entity& e);
@@ -70,6 +88,14 @@ private:
     GridIndex grid_;
     std::unordered_map<uint64_t, uint32_t> id_to_slot_;
     std::unordered_map<uint16_t, std::vector<uint32_t>> by_label_;
+
+    // Flat feature storage (row-major n x feat_dim_), cache-friendly scan.
+    std::vector<float> feat_flat_;
+    std::vector<uint64_t> feat_ids_;
+    std::unordered_map<uint64_t, uint32_t> feat_row_;
+    size_t feat_dim_ = 0;
+
+    mutable std::mutex store_mtx_;  // serializes SQLite access (flush thread + main thread)
     uint64_t next_id_ = 1;
     mutable Stats stats_{};
 

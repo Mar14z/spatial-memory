@@ -54,6 +54,11 @@ public:
     uint64_t count_observations() const;  // SUM(sample_count)
     uint64_t count_segments() const;      // COUNT(*)
 
+    // v3: per-object semantic feature (e.g. CLIP 512-d fp32 blob)
+    bool set_feature(uint64_t entity_id, const float* feat, size_t dim);
+    void load_features(const std::function<void(uint64_t, const float*, size_t)>& cb) const;
+    uint64_t count_features() const;
+
 private:
     bool exec(const char* sql);
 

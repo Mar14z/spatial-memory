@@ -257,6 +257,54 @@ TEST(QueryTest, HistoryAndTimeRange) {
     for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
 }
 
+TEST(FeatureTest, SetQueryAndPersist) {
+    std::string base = "/tmp/sm_test_feat";
+    for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+
+    uint64_t a = 0, b = 0;
+    {
+        Config c;
+        c.db_path = base;
+        SpatialMemoryEngine e(c);
+        a = e.add_observation(make_obs(1, 0.f, 0.f, 0.f, 0));
+        b = e.add_observation(make_obs(2, 5.f, 0.f, 0.f, 0));
+
+        std::vector<float> fa(512, 0.f), fb(512, 0.f);
+        fa[0] = 3.f;   // not normalized on purpose, engine must normalize
+        fb[1] = 2.f;
+        EXPECT_TRUE(e.set_feature(a, fa.data(), 512));
+        EXPECT_TRUE(e.set_feature(b, fb.data(), 512));
+        EXPECT_EQ(e.feature_count(), 2u);
+
+        auto hits = e.query_by_feature(fa.data(), 512, 2);
+        ASSERT_EQ(hits.size(), 2u);
+        EXPECT_EQ(hits[0].id, a);
+        EXPECT_NEAR(hits[0].score, 1.0f, 1e-4f);
+        EXPECT_NEAR(hits[1].score, 0.0f, 1e-4f);
+    }
+
+    // reopen: features must be restored from SQLite blob
+    Config c2;
+    c2.db_path = base;
+    SpatialMemoryEngine e2(c2);
+    EXPECT_EQ(e2.feature_count(), 2u);
+    std::vector<float> q(512, 0.f);
+    q[1] = 1.f;
+    auto h = e2.query_by_feature(q.data(), 512, 1);
+    ASSERT_EQ(h.size(), 1u);
+    EXPECT_EQ(h[0].id, b);
+    EXPECT_EQ(h[0].label, 2u);
+
+    for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+}
+
+TEST(FeatureTest, RejectsUnknownEntity) {
+    SpatialMemoryEngine e;
+    std::vector<float> f(512, 0.f);
+    f[0] = 1.f;
+    EXPECT_FALSE(e.set_feature(999, f.data(), 512));
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

@@ -30,3 +30,16 @@ target_link_libraries(bench_sm PRIVATE sm pthread)
 
 add_executable(crash_test tools/crash_test.cpp)
 target_link_libraries(crash_test PRIVATE sm pthread)
+
+# ACL-dependent targets (only on the board with CANN sourced; skipped elsewhere)
+find_library(ASCENDCL_LIB ascendcl PATHS $ENV{ASCEND_HOME_PATH}/lib64 NO_DEFAULT_PATH)
+if(ASCENDCL_LIB)
+  add_library(sm_acl STATIC src/clip_extractor.cpp)
+  target_include_directories(sm_acl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_include_directories(sm_acl PRIVATE $ENV{ASCEND_HOME_PATH}/include)
+  target_link_libraries(sm_acl PUBLIC ${ASCENDCL_LIB})
+  target_compile_options(sm_acl PRIVATE -O2)
+
+  add_executable(clip_feature_test tools/clip_feature_test.cpp)
+  target_link_libraries(clip_feature_test PRIVATE sm_acl pthread)
+endif()

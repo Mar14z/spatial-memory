@@ -97,6 +97,11 @@ bool SqliteStore::open(const std::string& path) {
     exec("CREATE INDEX IF NOT EXISTS idx_seg_eid ON observations(entity_id, end_ts);");
     exec("CREATE INDEX IF NOT EXISTS idx_seg_ts ON observations(start_ts);");
 
+    // v3 migration: feature blob column on entities
+    if (!column_exists(db_, "entities", "feat")) {
+        exec("ALTER TABLE entities ADD COLUMN feat BLOB;");
+    }
+
     if (sqlite3_prepare_v2(db_,
             "INSERT INTO entities(id,label,state,px,py,pz,sx,sy,sz,"
             "first_seen,last_seen,confidence,obs_count)"
@@ -317,6 +322,50 @@ void SqliteStore::query_time_range(int64_t from_ts, int64_t to_ts, int label, si
         cb(hp);
     }
     sqlite3_finalize(st);
+}
+
+bool SqliteStore::set_feature(uint64_t entity_id, const float* feat, size_t dim) {
+    if (!db_ || !feat || dim == 0) return false;
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, "UPDATE entities SET feat=? WHERE id=?;", -1, &st, nullptr) != SQLITE_OK) {
+        return false;
+    }
+    sqlite3_bind_blob(st, 1, feat, (int)(dim * sizeof(float)), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)entity_id);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+void SqliteStore::load_features(
+    const std::function<void(uint64_t, const float*, size_t)>& cb) const {
+    if (!db_) return;
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, "SELECT id, feat FROM entities WHERE feat IS NOT NULL;",
+                           -1, &st, nullptr) != SQLITE_OK) {
+        return;
+    }
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        uint64_t id = (uint64_t)sqlite3_column_int64(st, 0);
+        const void* blob = sqlite3_column_blob(st, 1);
+        int bytes = sqlite3_column_bytes(st, 1);
+        if (blob && bytes > 0) {
+            cb(id, static_cast<const float*>(blob), (size_t)bytes / sizeof(float));
+        }
+    }
+    sqlite3_finalize(st);
+}
+
+uint64_t SqliteStore::count_features() const {
+    if (!db_) return 0;
+    sqlite3_stmt* st = nullptr;
+    uint64_t n = 0;
+    if (sqlite3_prepare_v2(db_, "SELECT COUNT(*) FROM entities WHERE feat IS NOT NULL;",
+                           -1, &st, nullptr) == SQLITE_OK) {
+        if (sqlite3_step(st) == SQLITE_ROW) n = (uint64_t)sqlite3_column_int64(st, 0);
+    }
+    sqlite3_finalize(st);
+    return n;
 }
 
 uint64_t SqliteStore::count_observations() const {
