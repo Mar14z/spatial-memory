@@ -11,6 +11,18 @@ namespace sm {
 struct Entity;
 struct Observation;
 
+// One compressed "resident segment" on the observation timeline:
+// a run of observations of the same object, spatially stable (<5cm)
+// and temporally contiguous (<5s).
+struct HistoryPoint {
+    uint64_t entity_id = 0;
+    int64_t start_ts = 0;
+    int64_t end_ts = 0;
+    float pos[3] = {0.f, 0.f, 0.f};
+    uint32_t samples = 0;
+    float confidence = 0.f;
+};
+
 // Thin wrapper over SQLite (WAL mode) for the cold/persistent layer.
 class SqliteStore {
 public:
@@ -27,17 +39,29 @@ public:
     bool commit();
 
     bool upsert_entity(const Entity& e);
-    bool append_observation(uint64_t entity_id, const Observation& o);
+    // v2: merge into the last segment when within gap/dist, else append a new segment.
+    bool append_segment(uint64_t entity_id, const Observation& o,
+                        int64_t max_gap_ns, float max_dist_m);
 
     void load_entities(const std::function<void(const Entity&)>& cb);
-    uint64_t count_observations();
+
+    void query_history(uint64_t entity_id, int64_t from_ts, int64_t to_ts, size_t limit,
+                       const std::function<void(const HistoryPoint&)>& cb) const;
+    // label < 0 means no label filter
+    void query_time_range(int64_t from_ts, int64_t to_ts, int label, size_t limit,
+                          const std::function<void(const HistoryPoint&)>& cb) const;
+
+    uint64_t count_observations() const;  // SUM(sample_count)
+    uint64_t count_segments() const;      // COUNT(*)
 
 private:
     bool exec(const char* sql);
 
     sqlite3* db_ = nullptr;
     sqlite3_stmt* st_upsert_ = nullptr;
-    sqlite3_stmt* st_obs_ = nullptr;
+    sqlite3_stmt* st_sel_last_ = nullptr;
+    sqlite3_stmt* st_upd_seg_ = nullptr;
+    sqlite3_stmt* st_ins_seg_ = nullptr;
 };
 
 }  // namespace sm

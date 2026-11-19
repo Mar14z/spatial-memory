@@ -31,6 +31,13 @@ public:
     std::vector<QueryResult> query_label(uint16_t label) const;
     std::optional<QueryResult> get(uint64_t id) const;
 
+    // v2: timeline queries (persistent mode only; empty result in memory mode)
+    std::vector<HistoryPoint> query_history(uint64_t entity_id, int64_t from_ts, int64_t to_ts,
+                                            size_t limit = 1000) const;
+    std::vector<HistoryPoint> query_time_range(int64_t from_ts, int64_t to_ts,
+                                               std::optional<uint16_t> label = std::nullopt,
+                                               size_t limit = 10000) const;
+
     struct Stats {
         uint64_t adds = 0;
         uint64_t updates = 0;
@@ -44,6 +51,7 @@ public:
     size_t grid_cells() const { return grid_.cell_count(); }
     bool persistent() const { return store_ != nullptr; }
     uint64_t persisted_observations();
+    uint64_t persisted_segments();
 
 private:
     struct WriteItem {

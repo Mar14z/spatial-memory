@@ -166,6 +166,97 @@ TEST(PersistTest, MemoryModeUnaffected) {
     EXPECT_EQ(e.size(), 1u);
 }
 
+TEST(SegmentTest, StaticObjectCompresses) {
+    std::string base = "/tmp/sm_test_seg1";
+    for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+    {
+        Config c;
+        c.db_path = base;
+        SpatialMemoryEngine e(c);
+        for (int i = 0; i < 100; i++) {
+            e.add_observation(make_obs(1, 1.0f + 0.01f * (float)(i % 3), 0.f, 0.f,
+                                       (int64_t)i * 100'000'000LL));
+        }
+    }
+    Config c2;
+    c2.db_path = base;
+    SpatialMemoryEngine e2(c2);
+    EXPECT_EQ(e2.persisted_observations(), 100u);  // SUM(sample_count)
+    EXPECT_EQ(e2.persisted_segments(), 1u);        // 100 obs -> 1 resident segment
+    for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+}
+
+TEST(SegmentTest, GapSplitsSegments) {
+    std::string base = "/tmp/sm_test_seg2";
+    for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+    {
+        Config c;
+        c.db_path = base;
+        c.segment_max_gap_ns = 1'000'000'000LL;  // 1s merge window
+        SpatialMemoryEngine e(c);
+        e.add_observation(make_obs(1, 1.f, 0.f, 0.f, 0));
+        // 2s gap: still same entity (5s assoc window) but > 1s segment gap -> new segment
+        e.add_observation(make_obs(1, 1.f, 0.f, 0.f, 2'000'000'000LL));
+    }
+    Config c2;
+    c2.db_path = base;
+    SpatialMemoryEngine e2(c2);
+    EXPECT_EQ(e2.size(), 1u);
+    EXPECT_EQ(e2.persisted_segments(), 2u);
+    for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+}
+
+TEST(SegmentTest, MoveSplitsSegments) {
+    std::string base = "/tmp/sm_test_seg3";
+    for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+    {
+        Config c;
+        c.db_path = base;
+        SpatialMemoryEngine e(c);
+        for (int i = 0; i < 10; i++) {
+            e.add_observation(make_obs(1, 1.f + 0.1f * (float)i, 0.f, 0.f,
+                                       (int64_t)i * 100'000'000LL));
+        }
+    }
+    Config c2;
+    c2.db_path = base;
+    SpatialMemoryEngine e2(c2);
+    EXPECT_EQ(e2.size(), 1u);                   // still one entity
+    EXPECT_EQ(e2.persisted_segments(), 10u);    // each 0.1m step > 5cm -> new segment
+    for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+}
+
+TEST(QueryTest, HistoryAndTimeRange) {
+    std::string base = "/tmp/sm_test_query";
+    for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+    {
+        Config c;
+        c.db_path = base;
+        SpatialMemoryEngine e(c);
+        e.add_observation(make_obs(1, 1.f, 0.f, 0.f, 0));
+        e.add_observation(make_obs(1, 1.f, 0.f, 0.f, 1'000'000'000LL));
+        e.add_observation(make_obs(2, 5.f, 0.f, 0.f, 1'000'000'000LL));
+    }
+    Config c2;
+    c2.db_path = base;
+    SpatialMemoryEngine e2(c2);
+
+    auto h = e2.query_history(1, 0, 2'000'000'000LL, 100);
+    ASSERT_EQ(h.size(), 1u);  // merged segment
+    EXPECT_EQ(h[0].samples, 2u);
+    EXPECT_EQ(h[0].start_ts, 0);
+    EXPECT_EQ(h[0].end_ts, 1'000'000'000LL);
+
+    auto t = e2.query_time_range(0, 2'000'000'000LL, std::nullopt, 100);
+    EXPECT_EQ(t.size(), 2u);  // one segment per entity
+
+    auto t1 = e2.query_time_range(0, 2'000'000'000LL, 2, 100);
+    ASSERT_EQ(t1.size(), 1u);
+    EXPECT_EQ(t1[0].entity_id, 2u);
+
+    for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
