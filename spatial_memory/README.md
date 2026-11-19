@@ -56,6 +56,7 @@ make -j3
 | kill -9 崩溃恢复 | **5/5 轮全量恢复**（6000 条/轮，integrity ok） |
 | 特征向量检索（v3a） | 1 万 × 512 维 top5：**P99 12.3 ms** |
 | CLIP 视觉塔（v3b） | **18.9 ms/次**（224×224，实机） |
+| CLIP 文本塔 + BPE tokenizer（v3c） | **9 ms/次**；tokenizer 与 HF 官方逐位一致 |
 
 对照：裸网格微基准 P99 18.3 µs；目标 P99 < 500 µs。
 

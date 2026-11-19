@@ -32,4 +32,31 @@ private:
     double last_ms_ = 0.0;
 };
 
+// CLIP text encoder via Ascend ACL.
+// Input: int64 token ids (77). Output: 512-d L2-normalized feature.
+class ClipTextExtractor {
+public:
+    ClipTextExtractor() = default;
+    ~ClipTextExtractor();
+    ClipTextExtractor(const ClipTextExtractor&) = delete;
+    ClipTextExtractor& operator=(const ClipTextExtractor&) = delete;
+
+    bool init(const std::string& om_path);
+    bool ready() const { return ready_; }
+    bool encode(const int64_t* ids, size_t n, std::vector<float>& out);
+    double last_ms() const { return last_ms_; }
+
+private:
+    void* ctx_ = nullptr;
+    uint32_t model_id_ = 0;
+    void* in_dev_ = nullptr;
+    void* out_dev_ = nullptr;
+    void* in_ds_ = nullptr;
+    void* out_ds_ = nullptr;
+    size_t in_bytes_ = 0;
+    size_t out_bytes_ = 0;
+    bool ready_ = false;
+    double last_ms_ = 0.0;
+};
+
 }  // namespace sm

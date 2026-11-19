@@ -133,6 +133,8 @@ query_radius(center, 1.5m, label=cup)   耗时 ~40µs
 | **kill -9 崩溃恢复** | **5/5 轮通过**（每轮 6000 条写入全部恢复，integrity ok） |
 | 特征向量检索（v3a，1 万 × 512 维 top5） | **P50 12.2 ms / P99 12.3 ms** |
 | CLIP 视觉塔推理（v3b，224×224） | **18.9 ms/次**（实机复测，与可行性验证一致） |
+| CLIP 文本塔推理（v3c，77 tokens） | **8.9~9.1 ms/次** |
+| CLIP tokenizer 一致性（v3c） | 与 HF 官方 tokenizers 逐位一致（3 组样例固化进单测） |
 | 内存占用 | 16.6 MB / 10 万实体（≈166 B/实体） |
 | SD 顺序写 / 4K fsync | 30.2 MB/s / 6.13 ms |
 | SQLite 批量 1000 写入 | 37,857 rows/s |
@@ -162,4 +164,5 @@ query_radius(center, 1.5m, label=cup)   耗时 ~40µs
 | 2026-11-20 | v2 完成：观测表改为驻留段（写时合并：同物体 + <5cm + <5s）、schema 自动迁移、时间查询 API（query_history / query_time_range）；实测压缩比 294:1、时间查询 P99 162µs |
 | 2026-11-20 | 崩溃恢复测试闭环：kill -9 × 5 轮（每轮写入 6000 条）全部完整恢复，integrity_check ok；网格索引新增大半径保护（>262144 格改遍历已占用格子） |
 | 2026-11-20 | v3a 完成：物体级特征存储（entities.feat BLOB + 扁平内存缓存）+ query_by_feature（cosine top-k，1 万向量 P99 12.3ms）+ 特征写入并入写队列（修复与实体异步落库的竞态）+ CLIP 视觉塔 ACL 封装（18.9ms/次，512 维归一化）；待做：文本塔（tokenizer+BPE）、ROS2 节点 |
+| 2026-11-20 | v3c 完成：CLIP 文本塔 OM（int64[77]→512 维，9ms/次）+ 自研 C++ BPE tokenizer（`</w>` 词尾标记风格，与 HF 官方 tokenizers 输出逐位一致，3 组样例进单测）；CLIP 文本/视觉双塔链路打通；待做：ROS2 节点 |
 | 2026-11-20 | v3 可行性验证通过：CLIP ViT-B/32（Xenova ONNX 335MB）→ ATC → OM 198MB，板端视觉编码 18.85ms/次（53 FPS）；预算：10 FPS YOLO(306ms/s) + 10 物体/s CLIP(188ms/s) ≈ NPU 50% 负载，特征提取异步队列化不阻塞检测 |
