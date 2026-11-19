@@ -124,5 +124,48 @@ int main() {
                e.size(), e.query_radius(oldp, 0.6f).size(), e.query_radius(newp, 0.6f).size());
     }
 
+    // ---------- 5) persistence: write-through + recovery ----------
+    {
+        std::string base = "/tmp/sm_bench_persist";
+        for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+
+        const int N = 100000;
+        auto t0 = Clock::now();
+        {
+            Config c;
+            c.db_path = base;
+            SpatialMemoryEngine e(c);
+            for (int i = 0; i < N; i++) {
+                Observation o;
+                o.label = (uint16_t)(i % 256);
+                o.pos[0] = U(rng);
+                o.pos[1] = U(rng);
+                o.pos[2] = U(rng);
+                o.ts_ns = (int64_t)i;
+                o.confidence = 0.9f;
+                e.add_observation(o);
+            }
+        }  // destructor: final flush
+        auto t1 = Clock::now();
+        double wsec = std::chrono::duration<double>(t1 - t0).count();
+
+        double rms = 0;
+        size_t restored = 0;
+        uint64_t rows = 0;
+        {
+            auto t2 = Clock::now();
+            Config c2;
+            c2.db_path = base;
+            SpatialMemoryEngine e2(c2);
+            auto t3 = Clock::now();
+            rms = std::chrono::duration<double, std::milli>(t3 - t2).count();
+            restored = e2.size();
+            rows = e2.persisted_observations();
+        }
+        printf("[persist] write %d in %.1fs (%.0f/s incl flush)  recovery=%.0f ms  restored=%zu  obs_rows=%llu\n",
+               N, wsec, N / wsec, rms, restored, (unsigned long long)rows);
+        for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+    }
+
     return 0;
 }

@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <cstdio>
+#include <string>
+
 #include "sm/engine.hpp"
 
 using namespace sm;
@@ -119,6 +122,48 @@ TEST(PoolTest, FreeListReuse) {
     EXPECT_EQ(c, a);
     EXPECT_EQ(p.live_count(), 2u);
     (void)b;
+}
+
+TEST(PersistTest, RoundTripRestore) {
+    std::string base = "/tmp/sm_test_persist";
+    for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+
+    {
+        Config c;
+        c.db_path = base;
+        SpatialMemoryEngine e(c);
+        ASSERT_TRUE(e.persistent());
+        e.add_observation(make_obs(1, 1.0f, 2.0f, 3.0f, 0));
+        e.add_observation(make_obs(1, 1.02f, 2.0f, 3.0f, 50'000'000LL));
+        e.add_observation(make_obs(2, 5.0f, 0.0f, 0.0f, 0));
+        EXPECT_EQ(e.size(), 2u);
+    }  // destructor flushes remaining queue
+
+    Config c2;
+    c2.db_path = base;
+    SpatialMemoryEngine e2(c2);
+    EXPECT_EQ(e2.size(), 2u);
+
+    float p[3] = {1.0f, 2.0f, 3.0f};
+    auto r = e2.query_radius(p, 1.0f);
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r[0].label, 1u);
+    EXPECT_EQ(e2.persisted_observations(), 3u);
+
+    // id continuity after recovery (must not collide with restored ids)
+    uint64_t nid = e2.add_observation(make_obs(3, 9.0f, 9.0f, 9.0f, 0));
+    EXPECT_GT(nid, 2u);
+
+    for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+}
+
+TEST(PersistTest, MemoryModeUnaffected) {
+    Config c;  // no db_path -> pure in-memory
+    SpatialMemoryEngine e(c);
+    EXPECT_FALSE(e.persistent());
+    EXPECT_EQ(e.persisted_observations(), 0u);
+    e.add_observation(make_obs(1, 0.f, 0.f, 0.f, 0));
+    EXPECT_EQ(e.size(), 1u);
 }
 
 int main(int argc, char** argv) {
