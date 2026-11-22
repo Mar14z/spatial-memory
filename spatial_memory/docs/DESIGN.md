@@ -1,7 +1,7 @@
 # 空间记忆引擎 —— 设计文档
 
-> 状态：v0 纯内存 ✅，v1 持久化 ✅，v2 压缩+时间查询 ✅
-> 更新：2026-11-20
+> 状态：v0 纯内存 ✅，v1 持久化 ✅，v2 压缩+时间查询 ✅，v3a/b/c CLIP 双塔 ✅，v3d 生命周期 ✅
+> 更新：2026-11-21
 
 ## 1. 定位
 
@@ -84,6 +84,21 @@ query_radius(center, 1.5m, label=cup)   耗时 ~40µs
 └─ 完成（目标 < 2s），接新数据
 ```
 
+### 3.4 维护流（v3d）
+
+```
+add_observation 每 1024 次（与写线程同线程，无新锁）
+└─ sweep(now)                    10 万实体 ~100µs
+   ├─ age > stale_after(120s)    → kStale：仍在网格中，仍可查询（只是标记陈旧）
+   ├─ age > forget_after(1h)     → forget：网格 / 类别索引 / ID 映射 / 特征行
+   └─ live > max_entities        → 按 last_seen 最旧淘汰到 90%
+```
+
+- stale 不删任何索引：重新观测时按 ID 关联回原对象，ID 保持稳定
+- forget 只清"当前状态"与特征；观测段保留为历史
+- 持久化侧写墓碑行（`state=2, feat=NULL`）：保住 ID 水位，历史段按 label 查询仍能 JOIN 到对象
+- 若上层多线程查询，需注意 sweep 的特征行 swap-remove 会与 `query_by_feature` 竞争；当前假设单线程 executor
+
 ## 4. 三份数据的角色
 
 | 数据 | 位置 | 回答什么问题 | 权威性 |
@@ -91,6 +106,7 @@ query_radius(center, 1.5m, label=cup)   耗时 ~40µs
 | 对象池 + 网格索引 | 内存 | "现在周围有什么" | 查询权威 |
 | 对象表 | SQLite | 重启后"有什么" | 恢复权威 |
 | 观测段表 | SQLite（驻留段聚合） | "上周三杯子在哪" | 历史权威 |
+| 墓碑行（state=2） | SQLite 对象表 | 保持 ID 水位与历史段可解析 | 元数据 |
 | 写队列 | 内存 | 待落盘变更 | 易失（最多丢 50ms） |
 
 ## 5. 一帧的完整时间账（实测）
@@ -150,7 +166,9 @@ query_radius(center, 1.5m, label=cup)   耗时 ~40µs
 | v0 ✅ | 纯内存引擎（网格+对象池+关联） | P99 < 500µs，10 单测 |
 | v1 ✅ | SQLite WAL + 观测表 + 启动恢复 | 持久化 24k/s，恢复 452ms，12 单测 |
 | v2 ✅ | 观测压缩（驻留段）+ 时间查询 API | 压缩比 294:1，时间查询 P99 162µs，16 单测 |
-| v3 | 开放词汇（物体级 CLIP 特征 + query_text 向量检索）+ rclcpp 节点 + 摄像头接入 | ≥15 FPS 端到端，query_text P99 <20ms，Recall@5 >80% |
+| v3a/b/c ✅ | 物体级 CLIP 特征 + 双塔 + BPE tokenizer | 视觉 18.9ms / 文本 9ms；检索 1 万 P99 12.3ms |
+| v3d ✅ | 实体生命周期（stale/forget）+ 容量淘汰 + 特征回收 + 墓碑 | 长跑实体与特征有界；25 单测 |
+| v3e | rclcpp 节点 + 摄像头接入 + 3D 定位 | ≥15 FPS 端到端，query_text P99 <20ms，Recall@5 >80% |
 | v4 | ReSpaceBench 评估 + 机械臂联动 | 重访一致性、抓取闭环 |
 
 ## 9. 变更记录
@@ -166,3 +184,4 @@ query_radius(center, 1.5m, label=cup)   耗时 ~40µs
 | 2026-11-20 | v3a 完成：物体级特征存储（entities.feat BLOB + 扁平内存缓存）+ query_by_feature（cosine top-k，1 万向量 P99 12.3ms）+ 特征写入并入写队列（修复与实体异步落库的竞态）+ CLIP 视觉塔 ACL 封装（18.9ms/次，512 维归一化）；待做：文本塔（tokenizer+BPE）、ROS2 节点 |
 | 2026-11-20 | v3c 完成：CLIP 文本塔 OM（int64[77]→512 维，9ms/次）+ 自研 C++ BPE tokenizer（`</w>` 词尾标记风格，与 HF 官方 tokenizers 输出逐位一致，3 组样例进单测）；CLIP 文本/视觉双塔链路打通；待做：ROS2 节点 |
 | 2026-11-20 | v3 可行性验证通过：CLIP ViT-B/32（Xenova ONNX 335MB）→ ATC → OM 198MB，板端视觉编码 18.85ms/次（53 FPS）；预算：10 FPS YOLO(306ms/s) + 10 物体/s CLIP(188ms/s) ≈ NPU 50% 负载，特征提取异步队列化不阻塞检测 |
+| 2026-11-21 | v3d 完成：实体生命周期（`stale_after` 120s → kStale 仍可查；`forget_after` 1h → 回收网格/类别索引/特征行）+ `max_entities` 容量淘汰（最旧 10%）+ `sweep()` 每 1024 次写入触发；持久化写墓碑行（state=2, feat=NULL）保住 ID 水位与历史段可解析；修复内存模式写队列无限增长；ACL 改为进程级共享单例（双塔引用计数、线程本地 context 绑定、execute 串行化） |

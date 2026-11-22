@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <unordered_set>
 #include <utility>
 
 namespace sm {
@@ -54,20 +56,30 @@ QueryResult SpatialMemoryEngine::to_result(const Entity& e) {
     r.size[2] = e.size[2];
     r.last_seen_ns = e.last_seen_ns;
     r.confidence = e.confidence;
+    r.state = static_cast<uint8_t>(e.state);
     return r;
 }
 
 void SpatialMemoryEngine::recover() {
     store_->load_entities([&](const Entity& e) {
+        if (e.state == EntityState::kDeleted) return;
         uint32_t slot = pool_.alloc();
-        pool_.get(slot) = e;
-        grid_.insert(slot, e.pos);
+        Entity& slot_e = pool_.get(slot);
+        slot_e = e;
+        grid_.insert(slot, slot_e.pos);
         id_to_slot_[e.id] = slot;
         by_label_[e.label].push_back(slot);
+        slot_e.label_pos = (uint32_t)(by_label_[e.label].size() - 1);
         if (e.id >= next_id_) next_id_ = e.id + 1;
     });
+    // Deleted rows are skipped above, so derive the id watermark from the table itself.
+    uint64_t max_id = store_->max_entity_id();
+    if (max_id >= next_id_) next_id_ = max_id + 1;
     store_->load_features([&](uint64_t id, const float* f, size_t n) {
         if (n == 0) return;
+        // Drop orphan features whose entity row is gone (crash between two batch steps).
+        auto sit = id_to_slot_.find(id);
+        if (sit == id_to_slot_.end()) return;
         if (feat_dim_ == 0) feat_dim_ = n;
         if (n != feat_dim_) return;
         feat_row_[id] = (uint32_t)feat_ids_.size();
@@ -85,6 +97,8 @@ void SpatialMemoryEngine::enqueue(const Entity& e, const Observation& o) {
 }
 
 void SpatialMemoryEngine::enqueue_item(WriteItem&& wi) {
+    // Memory-only engine has no consumer for the queue: never accumulate writes.
+    if (!store_) return;
     bool notify = false;
     {
         std::lock_guard<std::mutex> lk(q_mtx_);
@@ -115,22 +129,31 @@ void SpatialMemoryEngine::flush_batch(std::deque<WriteItem>& batch) {
     if (!store_ || batch.empty()) return;
     std::lock_guard<std::mutex> lk(store_mtx_);
     store_->begin();
-    // 1) entity rows first (features reference them)
+    // Entity row deletions must run last, otherwise a later upsert would resurrect them.
+    std::unordered_set<uint64_t> dels;
+    for (auto& it : batch) {
+        if (it.kind == WriteItem::kDelete) dels.insert(it.id);
+    }
+    // 1) entity rows first (features reference them). Forgets are upserted as tombstones
+    //    so the row exists even when the entity was never flushed alive.
     std::unordered_map<uint64_t, const Entity*> last;
     last.reserve(batch.size());
     for (auto& it : batch) {
         if (it.kind == WriteItem::kObservation) last[it.ent.id] = &it.ent;
+        else if (it.kind == WriteItem::kDelete) last[it.id] = &it.ent;
     }
     for (auto& kv : last) store_->upsert_entity(*kv.second);
-    // 2) timeline segments + feature blobs
+    // 2) timeline segments + feature blobs (timeline is history, kept even after forget)
     for (auto& it : batch) {
         if (it.kind == WriteItem::kObservation) {
             store_->append_segment(it.ent.id, it.obs,
                                    cfg_.segment_max_gap_ns, cfg_.segment_max_dist_m);
-        } else {
+        } else if (it.kind == WriteItem::kFeature) {
             store_->set_feature(it.id, it.feat.data(), it.feat.size());
         }
     }
+    // 3) forget: clear the feature blob and stamp the tombstone
+    for (uint64_t id : dels) store_->delete_entity(id);
     store_->commit();
     persisted_ += batch.size();
 }
@@ -143,7 +166,7 @@ uint64_t SpatialMemoryEngine::add_observation(const Observation& obs) {
 
     grid_.for_candidates(obs.pos, cfg_.assoc_radius, [&](uint32_t slot) {
         const Entity& e = pool_.get(slot);
-        if (e.state != EntityState::kActive) return;
+        if (e.state == EntityState::kDeleted) return;
         if (e.label != obs.label) return;
         if (obs.ts_ns - e.last_seen_ns > cfg_.assoc_window_ns) return;
         float dx = e.pos[0] - obs.pos[0];
@@ -169,9 +192,12 @@ uint64_t SpatialMemoryEngine::add_observation(const Observation& obs) {
         e.last_seen_ns = obs.ts_ns;
         e.obs_count++;
         e.confidence += (obs.confidence - e.confidence) * 0.2f;
+        e.state = EntityState::kActive;  // re-observed: teleport stale back to active
         stats_.updates++;
+        const uint64_t id = e.id;
         enqueue(e, obs);
-        return e.id;
+        if ((++ops_since_sweep_ & 1023u) == 0) sweep(obs.ts_ns);
+        return id;
     }
 
     uint32_t slot = pool_.alloc();
@@ -193,9 +219,12 @@ uint64_t SpatialMemoryEngine::add_observation(const Observation& obs) {
     grid_.insert(slot, e.pos);
     id_to_slot_[e.id] = slot;
     by_label_[e.label].push_back(slot);
+    e.label_pos = (uint32_t)(by_label_[e.label].size() - 1);
     stats_.new_entities++;
+    const uint64_t id = e.id;
     enqueue(e, obs);
-    return e.id;
+    if ((++ops_since_sweep_ & 1023u) == 0) sweep(obs.ts_ns);
+    return id;
 }
 
 std::vector<QueryResult> SpatialMemoryEngine::query_radius(
@@ -205,7 +234,7 @@ std::vector<QueryResult> SpatialMemoryEngine::query_radius(
     const float r2 = radius * radius;
     grid_.for_candidates(center, radius, [&](uint32_t slot) {
         const Entity& e = pool_.get(slot);
-        if (e.state != EntityState::kActive) return;
+        if (e.state == EntityState::kDeleted) return;
         if (label && e.label != *label) return;
         float dx = e.pos[0] - center[0];
         float dy = e.pos[1] - center[1];
@@ -223,7 +252,7 @@ std::vector<QueryResult> SpatialMemoryEngine::query_label(uint16_t label) const 
     out.reserve(it->second.size());
     for (uint32_t slot : it->second) {
         const Entity& e = pool_.get(slot);
-        if (e.state != EntityState::kActive) continue;
+        if (e.state == EntityState::kDeleted) continue;
         out.push_back(to_result(e));
     }
     return out;
@@ -356,6 +385,114 @@ std::vector<HistoryPoint> SpatialMemoryEngine::query_time_range(
     store_->query_time_range(from_ts, to_ts, label ? (int)*label : -1, limit,
                              [&](const HistoryPoint& hp) { out.push_back(hp); });
     return out;
+}
+
+void SpatialMemoryEngine::erase_feature_row(uint64_t id) {
+    auto it = feat_row_.find(id);
+    if (it == feat_row_.end() || feat_dim_ == 0) return;
+    const uint32_t row = it->second;
+    const size_t last = feat_ids_.size() - 1;
+    if (row != last) {
+        // Move the last row into the hole, then fix up its reverse mapping.
+        float* dst = feat_flat_.data() + (size_t)row * feat_dim_;
+        const float* src = feat_flat_.data() + (size_t)last * feat_dim_;
+        std::copy(src, src + feat_dim_, dst);
+        const uint64_t moved = feat_ids_[last];
+        feat_ids_[row] = moved;
+        feat_row_[moved] = row;
+    }
+    feat_ids_.pop_back();
+    feat_flat_.resize(last * feat_dim_);
+    feat_row_.erase(id);
+}
+
+void SpatialMemoryEngine::forget_entity(uint32_t slot) {
+    if (slot >= pool_.capacity()) return;
+    Entity& e = pool_.get(slot);
+    if (e.state == EntityState::kDeleted) return;
+    const uint64_t id = e.id;
+    const uint16_t label = e.label;
+
+    grid_.remove(slot, e.pos);
+    auto lit = by_label_.find(label);
+    if (lit != by_label_.end()) {
+        auto& v = lit->second;
+        const uint32_t pos = e.label_pos;
+        if (pos < v.size() && v[pos] == slot) {
+            const uint32_t moved = v.back();
+            v[pos] = moved;
+            if (moved != slot) pool_.get(moved).label_pos = pos;
+            v.pop_back();
+        } else {
+            for (size_t i = 0; i < v.size(); ++i) {  // defensive: index drift must not leak slots
+                if (v[i] != slot) continue;
+                const uint32_t moved = v.back();
+                v[i] = moved;
+                if (moved != slot) pool_.get(moved).label_pos = (uint32_t)i;
+                v.pop_back();
+                break;
+            }
+        }
+        if (v.empty()) by_label_.erase(lit);
+    }
+    id_to_slot_.erase(id);
+    erase_feature_row(id);
+
+    if (store_) {
+        WriteItem wi;
+        wi.kind = WriteItem::kDelete;
+        wi.id = id;
+        wi.ent = e;
+        wi.ent.state = EntityState::kDeleted;  // tombstone payload for the persistent row
+        enqueue_item(std::move(wi));
+    }
+    pool_.free_slot(slot);
+    stats_.forgotten++;
+}
+
+void SpatialMemoryEngine::enforce_capacity() {
+    if (pool_.live_count() <= cfg_.max_entities) return;
+    std::vector<std::pair<int64_t, uint32_t>> all;
+    all.reserve(pool_.live_count());
+    for (uint32_t slot = 0; slot < pool_.capacity(); ++slot) {
+        const Entity& e = pool_.get(slot);
+        if (e.state == EntityState::kDeleted) continue;
+        all.emplace_back(e.last_seen_ns, slot);
+    }
+    // Drop the oldest 10% over the limit, so eviction does not run on every observation.
+    const size_t target = (size_t)cfg_.max_entities * 9 / 10;
+    if (all.size() <= target) return;
+    const size_t drop = all.size() - target;
+    std::nth_element(all.begin(), all.begin() + (ptrdiff_t)drop, all.end());
+    for (size_t i = 0; i < drop; ++i) forget_entity(all[i].second);
+}
+
+void SpatialMemoryEngine::sweep(int64_t now_ns) {
+    const size_t cap = pool_.capacity();
+    for (uint32_t slot = 0; slot < cap; ++slot) {
+        Entity& e = pool_.get(slot);
+        if (e.state == EntityState::kDeleted) continue;
+        const int64_t age = now_ns - e.last_seen_ns;
+        if (age < 0) continue;  // out-of-order timestamps must not evict fresh data
+        if (age > cfg_.forget_after_ns) {
+            forget_entity(slot);
+        } else if (age > cfg_.stale_after_ns) {
+            e.state = EntityState::kStale;
+        }
+    }
+    enforce_capacity();
+}
+
+bool SpatialMemoryEngine::remove_entity(uint64_t id) {
+    auto it = id_to_slot_.find(id);
+    if (it == id_to_slot_.end()) return false;
+    forget_entity(it->second);
+    return true;
+}
+
+size_t SpatialMemoryEngine::pending_writes() const {
+    std::lock_guard<std::mutex> lk(q_mtx_);
+    return queue_.size();
 }
 
 }  // namespace sm

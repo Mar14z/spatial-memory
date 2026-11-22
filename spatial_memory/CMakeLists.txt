@@ -31,10 +31,13 @@ target_link_libraries(bench_sm PRIVATE sm pthread)
 add_executable(crash_test tools/crash_test.cpp)
 target_link_libraries(crash_test PRIVATE sm pthread)
 
+add_executable(replay_observations tools/replay_observations.cpp)
+target_link_libraries(replay_observations PRIVATE sm pthread)
+
 # ACL-dependent targets (only on the board with CANN sourced; skipped elsewhere)
 find_library(ASCENDCL_LIB ascendcl PATHS $ENV{ASCEND_HOME_PATH}/lib64 NO_DEFAULT_PATH)
 if(ASCENDCL_LIB)
-  add_library(sm_acl STATIC src/clip_extractor.cpp src/clip_text_extractor.cpp)
+  add_library(sm_acl STATIC src/acl_runtime.cpp src/clip_extractor.cpp src/clip_text_extractor.cpp)
   target_include_directories(sm_acl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_include_directories(sm_acl PRIVATE $ENV{ASCEND_HOME_PATH}/include)
   target_link_libraries(sm_acl PUBLIC ${ASCENDCL_LIB})
@@ -45,4 +48,7 @@ if(ASCENDCL_LIB)
 
   add_executable(clip_text_test tools/clip_text_test.cpp)
   target_link_libraries(clip_text_test PRIVATE sm sm_acl pthread)
+
+  add_executable(clip_inspect tools/clip_inspect.cpp)
+  target_link_libraries(clip_inspect PRIVATE ${ASCENDCL_LIB})
 endif()

@@ -51,12 +51,19 @@ public:
                                              size_t top_k = 5) const;
     size_t feature_count() const { return feat_ids_.size(); }
 
+    // v3d: entity lifecycle. sweep() promotes aged entities to stale and forgets the
+    // very old ones; called automatically from add_observation, public for tests/timers.
+    void sweep(int64_t now_ns);
+    bool remove_entity(uint64_t id);
+    size_t pending_writes() const;
+
     struct Stats {
         uint64_t adds = 0;
         uint64_t updates = 0;
         uint64_t new_entities = 0;
         uint64_t queries = 0;
         uint64_t persisted_items = 0;
+        uint64_t forgotten = 0;
     };
 
     Stats stats() const;
@@ -68,11 +75,11 @@ public:
 
 private:
     struct WriteItem {
-        enum Kind : uint8_t { kObservation = 0, kFeature = 1 };
+        enum Kind : uint8_t { kObservation = 0, kFeature = 1, kDelete = 2 };
         Kind kind = kObservation;
-        Entity ent;               // kObservation
+        Entity ent;               // kObservation / kDelete (tombstone payload)
         Observation obs;          // kObservation
-        uint64_t id = 0;          // kFeature
+        uint64_t id = 0;          // kFeature / kDelete
         std::vector<float> feat;  // kFeature (L2-normalized)
     };
 
@@ -81,6 +88,9 @@ private:
     void enqueue_item(WriteItem&& wi);
     void flush_loop();
     void flush_batch(std::deque<WriteItem>& batch);
+    void forget_entity(uint32_t slot);
+    void erase_feature_row(uint64_t id);
+    void enforce_capacity();
     static QueryResult to_result(const Entity& e);
 
     Config cfg_;
@@ -97,11 +107,12 @@ private:
 
     mutable std::mutex store_mtx_;  // serializes SQLite access (flush thread + main thread)
     uint64_t next_id_ = 1;
+    uint32_t ops_since_sweep_ = 0;
     mutable Stats stats_{};
 
     std::unique_ptr<SqliteStore> store_;
     std::thread flush_thread_;
-    std::mutex q_mtx_;
+    mutable std::mutex q_mtx_;
     std::condition_variable q_cv_;
     std::deque<WriteItem> queue_;
     std::atomic<bool> stop_{false};

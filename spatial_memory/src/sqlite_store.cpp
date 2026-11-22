@@ -368,6 +368,33 @@ uint64_t SqliteStore::count_features() const {
     return n;
 }
 
+uint64_t SqliteStore::max_entity_id() const {
+    if (!db_) return 0;
+    sqlite3_stmt* st = nullptr;
+    uint64_t n = 0;
+    if (sqlite3_prepare_v2(db_, "SELECT COALESCE(MAX(id),0) FROM entities;", -1, &st, nullptr) ==
+        SQLITE_OK) {
+        if (sqlite3_step(st) == SQLITE_ROW) n = (uint64_t)sqlite3_column_int64(st, 0);
+    }
+    sqlite3_finalize(st);
+    return n;
+}
+
+bool SqliteStore::delete_entity(uint64_t entity_id) {
+    if (!db_) return false;
+    // Tombstone instead of DELETE: the row anchors the id watermark and keeps label
+    // lookups over historical observation segments resolvable after a restart.
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, "UPDATE entities SET state=2, feat=NULL WHERE id=?;", -1, &st,
+                           nullptr) != SQLITE_OK) {
+        return false;
+    }
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)entity_id);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
 uint64_t SqliteStore::count_observations() const {
     if (!db_) return 0;
     sqlite3_stmt* st = nullptr;

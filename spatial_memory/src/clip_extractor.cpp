@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include "sm/acl_runtime.hpp"
+
 namespace sm {
 
 namespace {
@@ -22,26 +24,28 @@ ClipVisionExtractor::~ClipVisionExtractor() {
     if (in_dev_) aclrtFree(in_dev_);
     if (out_dev_) aclrtFree(out_dev_);
     if (model_id_) aclmdlUnload(model_id_);
-    if (ctx_) {
-        aclrtDestroyContext(static_cast<aclrtContext>(ctx_));
-        aclrtResetDevice(0);
-    }
-    if (ready_) aclFinalize();
+    if (holds_runtime_) AclRuntime::instance().release();
 }
 
 bool ClipVisionExtractor::init(const std::string& om_path) {
-    if (aclInit(nullptr) != ACL_SUCCESS) {
-        fprintf(stderr, "[clip] aclInit failed\n");
+    auto& rt = AclRuntime::instance();
+    if (!rt.acquire()) {
+        fprintf(stderr, "[clip] acl runtime unavailable\n");
         return false;
     }
-    if (aclrtSetDevice(0) != ACL_SUCCESS) return false;
-    aclrtContext ctx = nullptr;
-    if (aclrtCreateContext(&ctx, 0) != ACL_SUCCESS) return false;
-    ctx_ = ctx;
+    holds_runtime_ = true;
+    rt.bind_to_thread();
+    auto fail = [this]() {
+        if (holds_runtime_) {
+            AclRuntime::instance().release();
+            holds_runtime_ = false;
+        }
+        return false;
+    };
 
     if (aclmdlLoadFromFile(om_path.c_str(), &model_id_) != ACL_SUCCESS) {
         fprintf(stderr, "[clip] load model failed: %s\n", om_path.c_str());
-        return false;
+        return fail();
     }
     aclmdlDesc* desc = aclmdlCreateDesc();
     aclmdlGetDesc(desc, model_id_);
@@ -50,16 +54,24 @@ bool ClipVisionExtractor::init(const std::string& om_path) {
     aclmdlDestroyDesc(desc);
     if (in_bytes_ != (size_t)kSize * kSize * 3 * sizeof(float) || out_bytes_ == 0) {
         fprintf(stderr, "[clip] unexpected IO sizes in=%zu out=%zu\n", in_bytes_, out_bytes_);
-        return false;
+        return fail();
     }
 
-    if (aclrtMalloc(&in_dev_, in_bytes_, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) return false;
-    if (aclrtMalloc(&out_dev_, out_bytes_, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) return false;
+    if (aclrtMalloc(&in_dev_, in_bytes_, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) return fail();
+    if (aclrtMalloc(&out_dev_, out_bytes_, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) return fail();
 
     aclmdlDataset* in_ds = aclmdlCreateDataset();
     aclmdlDataset* out_ds = aclmdlCreateDataset();
-    if (aclmdlAddDatasetBuffer(in_ds, aclCreateDataBuffer(in_dev_, in_bytes_)) != ACL_SUCCESS) return false;
-    if (aclmdlAddDatasetBuffer(out_ds, aclCreateDataBuffer(out_dev_, out_bytes_)) != ACL_SUCCESS) return false;
+    if (aclmdlAddDatasetBuffer(in_ds, aclCreateDataBuffer(in_dev_, in_bytes_)) != ACL_SUCCESS) {
+        aclmdlDestroyDataset(in_ds);
+        aclmdlDestroyDataset(out_ds);
+        return fail();
+    }
+    if (aclmdlAddDatasetBuffer(out_ds, aclCreateDataBuffer(out_dev_, out_bytes_)) != ACL_SUCCESS) {
+        aclmdlDestroyDataset(in_ds);
+        aclmdlDestroyDataset(out_ds);
+        return fail();
+    }
     in_ds_ = in_ds;
     out_ds_ = out_ds;
     ready_ = true;
@@ -68,6 +80,9 @@ bool ClipVisionExtractor::init(const std::string& om_path) {
 
 bool ClipVisionExtractor::extract(const uint8_t* rgb224, std::vector<float>& out) {
     if (!ready_ || !rgb224) return false;
+    auto& rt = AclRuntime::instance();
+    rt.bind_to_thread();
+    std::lock_guard<std::mutex> lk(rt.exec_mtx());
     const size_t n = (size_t)kSize * kSize;
 
     // HWC uint8 -> CHW float, (x/255 - mean)/std

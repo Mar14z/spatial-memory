@@ -59,6 +59,11 @@ public:
     void load_features(const std::function<void(uint64_t, const float*, size_t)>& cb) const;
     uint64_t count_features() const;
 
+    // v3d: entity lifecycle. Writes a tombstone (state=2, feat=NULL) so the timeline
+    // stays resolvable and the id watermark survives restarts.
+    bool delete_entity(uint64_t entity_id);
+    uint64_t max_entity_id() const;
+
 private:
     bool exec(const char* sql);
 

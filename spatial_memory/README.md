@@ -7,7 +7,9 @@
 - **v0 完成**：纯内存引擎（对象池 + 网格哈希 + 数据关联），10 单测全绿
 - **v1 完成**：SQLite WAL 持久化（对象表+观测表）、异步批量写、启动恢复；12 单测全绿
 - **v2 完成**：观测压缩（驻留段合并）+ 时间查询 API；16 单测全绿
-- v3 计划：ROS2 节点 + 摄像头接入
+- **v3a/b/c 完成**：物体级 CLIP 特征 + 向量检索；视觉塔 18.9ms、文本塔 9ms（板端）
+- **v3d 完成**：实体生命周期（stale → forget）、容量淘汰、特征行回收、墓碑持久化；25 单测全绿
+- v3 待办：rclcpp 节点 + 摄像头接入 + 3D 定位方案
 
 详细设计（架构、数据流、设计决策、性能基线）见 [docs/DESIGN.md](docs/DESIGN.md)。
 
@@ -23,9 +25,13 @@ include/sm/
   types.hpp         # Observation / QueryResult / Entity / Config
   entity_pool.hpp   # 对象池（vector + free list，O(1) 分配）
   grid_index.hpp    # 网格哈希空间索引（1m 网格，u64 打包 key）
-  engine.hpp        # 门面：add_observation / query_*
-src/engine.cpp      # 关联 + 查询实现
-tests/test_sm.cpp   # 10 个 gtest 用例
+  engine.hpp        # 门面：add_observation / query_* / sweep
+  sqlite_store.hpp  # WAL 持久化、驻留段、特征 BLOB、墓碑
+  clip_extractor.hpp  # CLIP 视觉/文本塔 ACL 封装
+  clip_tokenizer.hpp  # GPT-2 byte-level BPE
+  acl_runtime.hpp     # 进程级 ACL 上下文（双塔共享，引用计数）
+src/engine.cpp      # 关联 + 查询 + 生命周期实现
+tests/test_sm.cpp   # 25 个 gtest 用例
 bench/bench_engine.cpp  # 4 组基准
 ```
 

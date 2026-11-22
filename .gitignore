@@ -6,3 +6,14 @@ kernel_meta/
 *.log
 .cache/
 __pycache__/
+
+# 第三方数据集（CC BY-NC，可重新下载，不进仓库）
+data/ReplicaCAD/
+data/replica/
+
+# 归档与嵌套仓库
+docs/spatial_memory.git/
+docs/*.zip
+
+# 工具缓存产物
+.trae-html-share-packages/

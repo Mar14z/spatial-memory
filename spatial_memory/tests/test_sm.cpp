@@ -329,6 +329,125 @@ TEST(TokenizerTest, MatchesReferenceIds) {
     }
 }
 
+TEST(MemoryMode, QueueStaysEmpty) {
+    SpatialMemoryEngine e;  // no db_path: nothing may accumulate in the write queue
+    for (int i = 0; i < 500; i++) {
+        e.add_observation(make_obs(1, (float)(i % 10), 0.f, 0.f,
+                                   (int64_t)i * 100'000'000LL));
+    }
+    EXPECT_EQ(e.pending_writes(), 0u);
+    EXPECT_EQ(e.size(), 10u);  // 10 distinct positions, 1m apart
+}
+
+TEST(Lifecycle, SweepMarksStaleThenForgets) {
+    Config c;
+    c.stale_after_ns = 1'000'000'000LL;    // 1s
+    c.forget_after_ns = 10'000'000'000LL;  // 10s
+    SpatialMemoryEngine e(c);
+    uint64_t id = e.add_observation(make_obs(1, 0.f, 0.f, 0.f, 0));
+
+    e.sweep(2'000'000'000LL);
+    auto r = e.get(id);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->state, (uint8_t)EntityState::kStale);
+
+    // Stale entities stay queryable: the memory is kept, only flagged.
+    float ctr[3] = {0.f, 0.f, 0.f};
+    EXPECT_EQ(e.query_radius(ctr, 1.0f).size(), 1u);
+    EXPECT_EQ(e.query_label(1).size(), 1u);
+
+    e.sweep(11'000'000'000LL);
+    EXPECT_FALSE(e.get(id).has_value());
+    EXPECT_EQ(e.size(), 0u);
+    EXPECT_EQ(e.stats().forgotten, 1u);
+    EXPECT_EQ(e.query_label(1).size(), 0u);
+}
+
+TEST(Lifecycle, RelinkStaleEntityKeepsId) {
+    Config c;
+    c.stale_after_ns = 1'000'000'000LL;
+    SpatialMemoryEngine e(c);
+    uint64_t id = e.add_observation(make_obs(1, 0.f, 0.f, 0.f, 0));
+    e.sweep(2'000'000'000LL);
+
+    uint64_t again = e.add_observation(make_obs(1, 0.05f, 0.f, 0.f, 2'500'000'000LL));
+    EXPECT_EQ(again, id);
+    EXPECT_EQ(e.size(), 1u);
+    ASSERT_TRUE(e.get(id).has_value());
+    EXPECT_EQ(e.get(id)->state, (uint8_t)EntityState::kActive);
+}
+
+TEST(Lifecycle, ForgotFeatureRowKeepsOthers) {
+    SpatialMemoryEngine e;
+    const size_t D = 5;
+    std::vector<uint64_t> ids;
+    std::vector<std::vector<float>> feats;
+    for (int i = 0; i < 5; i++) {
+        ids.push_back(e.add_observation(make_obs(1, 10.f * (float)i, 0.f, 0.f, 0)));
+        std::vector<float> f(D, 0.f);
+        f[i] = 1.f + (float)i;  // orthogonal, different norms
+        feats.push_back(f);
+        ASSERT_TRUE(e.set_feature(ids.back(), f.data(), D));
+    }
+    EXPECT_EQ(e.feature_count(), 5u);
+
+    ASSERT_TRUE(e.remove_entity(ids[2]));
+    EXPECT_EQ(e.feature_count(), 4u);
+    EXPECT_EQ(e.size(), 4u);
+
+    // Surviving rows must keep working after the swap-remove compaction.
+    for (int i : {0, 1, 3, 4}) {
+        auto hits = e.query_by_feature(feats[i].data(), D, 1);
+        ASSERT_EQ(hits.size(), 1u);
+        EXPECT_EQ(hits[0].id, ids[i]);
+        EXPECT_NEAR(hits[0].score, 1.f, 1e-4f);
+    }
+    auto all = e.query_by_feature(feats[2].data(), D, 5);
+    EXPECT_EQ(all.size(), 4u);
+    for (auto& h : all) EXPECT_NE(h.id, ids[2]);
+}
+
+TEST(Lifecycle, MaxEntitiesEvictsOldest) {
+    Config c;
+    c.max_entities = 10;
+    SpatialMemoryEngine e(c);
+    std::vector<uint64_t> ids;
+    for (int i = 0; i < 20; i++) {
+        ids.push_back(e.add_observation(
+            make_obs(1, 10.f * (float)i, 0.f, 0.f, (int64_t)i * 1'000'000'000LL)));
+    }
+    e.sweep(19'000'000'000LL);  // trims to 90% of the limit
+    EXPECT_EQ(e.size(), 9u);
+    for (int i = 19; i >= 11; i--) EXPECT_TRUE(e.get(ids[i]).has_value());
+    for (int i = 0; i <= 10; i++) EXPECT_FALSE(e.get(ids[i]).has_value());
+}
+
+TEST(Lifecycle, ForgetPersistsDeletionAndKeepsHistory) {
+    std::string base = "/tmp/sm_test_forget";
+    for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+    uint64_t id = 0;
+    {
+        Config c;
+        c.db_path = base;
+        SpatialMemoryEngine e(c);
+        id = e.add_observation(make_obs(1, 1.f, 2.f, 3.f, 0));
+        std::vector<float> f(8, 1.f);
+        ASSERT_TRUE(e.set_feature(id, f.data(), 8));
+        ASSERT_TRUE(e.remove_entity(id));
+        EXPECT_EQ(e.size(), 0u);
+    }  // destructor flushes observation + feature + delete
+    Config c2;
+    c2.db_path = base;
+    SpatialMemoryEngine e2(c2);
+    EXPECT_EQ(e2.size(), 0u);
+    EXPECT_EQ(e2.feature_count(), 0u);
+    EXPECT_EQ(e2.persisted_segments(), 1u);  // timeline is history, intentionally kept
+    // New entities must not reuse the forgotten id.
+    uint64_t nid = e2.add_observation(make_obs(1, 9.f, 9.f, 9.f, 0));
+    EXPECT_GT(nid, id);
+    for (auto suf : {"", "-wal", "-shm"}) std::remove((base + std::string(suf)).c_str());
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

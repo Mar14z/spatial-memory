@@ -20,7 +20,6 @@ public:
     double last_ms() const { return last_ms_; }
 
 private:
-    void* ctx_ = nullptr;
     uint32_t model_id_ = 0;
     void* in_dev_ = nullptr;
     void* out_dev_ = nullptr;
@@ -29,6 +28,7 @@ private:
     size_t in_bytes_ = 0;
     size_t out_bytes_ = 0;
     bool ready_ = false;
+    bool holds_runtime_ = false;
     double last_ms_ = 0.0;
 };
 
@@ -47,7 +47,6 @@ public:
     double last_ms() const { return last_ms_; }
 
 private:
-    void* ctx_ = nullptr;
     uint32_t model_id_ = 0;
     void* in_dev_ = nullptr;
     void* out_dev_ = nullptr;
@@ -56,6 +55,7 @@ private:
     size_t in_bytes_ = 0;
     size_t out_bytes_ = 0;
     bool ready_ = false;
+    bool holds_runtime_ = false;
     double last_ms_ = 0.0;
 };
 
