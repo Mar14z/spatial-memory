@@ -1,19 +1,28 @@
+# 构建产物
 build/
 kernel_meta/
+.cache/
+__pycache__/
+*.log
+
+# 模型文件
 *.om
 *.onnx
 *.pt
-*.log
-.cache/
-__pycache__/
 
-# 第三方数据集（CC BY-NC，可重新下载，不进仓库）
+# 参考源码与固件（整目录忽略）
+downloads/
+
+# 第三方数据集（CC BY-NC，可重新下载）
 data/ReplicaCAD/
 data/replica/
+data/replay/
 
 # 归档与嵌套仓库
 docs/spatial_memory.git/
 docs/*.zip
 
-# 工具缓存产物
+# 本地可视化页与工具缓存
+spatial_memory/docs/dataflow.html
 .trae-html-share-packages/
+m
